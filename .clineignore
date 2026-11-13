@@ -1,0 +1,10 @@
+target/
+node_modules/
+.git/
+*.cf
+*.cfe
+*.dt
+*.epf
+*.erf
+*.log
+.env

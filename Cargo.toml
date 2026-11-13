@@ -1,0 +1,12 @@
+[package]
+name = "translit_addin"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+native_api_1c = "0.10.7"
+utf16_lit = "2.0.2"
+translit = "0.8.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
