@@ -1,0 +1,86 @@
+# Задача: внешняя компонента 1С (Native API) на Rust для транслитерации — translit_addin
+
+## Контекст
+- Рабочий проект: D:\work\git\repository\Rust\translit_dll (новый проект НЕ создавать).
+- Эталон: D:\work\git\repository\Rust\byte_reader_addin (src\lib.rs, Cargo.toml,
+  Makefile.toml, Manifest.xml). ТОЛЬКО ДЛЯ ЧТЕНИЯ: любые изменения в нём запрещены.
+- Методика: https://infostart.ru/1c/articles/1920565/
+- Транслитерация: крейт translit 0.8.0
+  (https://github.com/ava57r/translit-rs, https://docs.rs/translit/0.8.0/translit/).
+- Согласованные зависимости: native_api_1c = "0.10.7", utf16_lit = "2.0.2", translit = "0.8.0".
+  Другие зависимости не добавлять.
+- Структура проекта: код в корне translit_dll (не в каталоге rust/), edition 2024 — как в эталоне.
+  Это согласованное исключение из .clinerules\20-rust.md.
+
+## Шаг 1. Среда разработки (проверить, не переустанавливать)
+Проверить наличие: rustup, rustc, cargo, toolchain stable-x86_64-pc-windows-msvc,
+targets x86_64-pc-windows-msvc и i686-pc-windows-msvc, MSVC Build Tools, cargo-make.
+Доустанавливать только недостающее. В отчёте указать, что было найдено и что установлено.
+
+## Шаг 2. Очистка и подготовка проекта translit_dll
+1. Удалить текущий код: src\main.rs, tests\cli.rs (и пустой каталог tests),
+   зависимости serde_json и [dev-dependencies] tempfile из Cargo.toml.
+   Не трогать: .clinerules, .clineignore, .gitignore, .bsl-language-server.json, docs.
+   Очистить каталог out.
+2. Cargo.toml:
+   - [package] name = "translit_addin", edition = "2024";
+   - [lib] crate-type = ["cdylib", "rlib"] (rlib нужен для cargo test);
+   - [dependencies] — только три согласованных крейта.
+3. Makefile.toml — по образцу эталона, но с заменой имён:
+   target\<triple>\release\translit_addin.dll → out\translit_x32.dll / out\translit_x64.dll,
+   архив out\translit.zip (в составе translit_x32.dll, translit_x64.dll, Manifest.xml).
+4. Manifest.xml — по образцу эталона:
+   <bundle xmlns="http://v8.1c.ru/8.2/addin/bundle" name="translit_addin">
+     <component os="Windows" path="translit_x32.dll" type="native" arch="i386" />
+     <component os="Windows" path="translit_x64.dll" type="native" arch="x86_64" />
+   </bundle>
+   (В эталоне ошибочно указано name="SoundPlayerAddIn" — не копировать.)
+
+## Шаг 3. Реализация (src\lib.rs, по образцу byte_reader_addin\src\lib.rs)
+- Структура компоненты: TranslitAddin, через #[derive(AddIn)], с полем #[add_in_con].
+- Метод:
+    #[add_in_func(name = "Transliterate", name_ru = "Транслитерировать")]
+    #[arg(Str)]   // Исходная строка (кириллица)
+    #[arg(Str)]   // Код системы транслитерации; пустая строка — система по умолчанию
+    #[returns(Str, result)]
+- Если native_api_1c 0.10.7 поддерживает значение по умолчанию для параметра,
+  объявить второй параметр необязательным со значением "". Если не поддерживает
+  (сверить с исходниками крейта), оставить его обязательным, а пустую строку
+  считать системой по умолчанию.
+- Коды систем (сравнение без учёта регистра, пробелы по краям отбрасываются):
+
+  | Код (основной) | Синонимы                  | Система                               | Функция translit          |
+  |----------------|---------------------------|---------------------------------------|---------------------------|
+  | GOST           | "" (пусто), ГОСТ, GOST779B | ГОСТ 7.79-2000, система Б (по умолч.) | gost779b_ru()             |
+  | PASSPORT       | ICAO, ЗАГРАНПАСПОРТ        | Загранпаспорт РФ 2013 (ICAO Doc 9303) | iternational_passport_2013_ru() |
+  | DRIVER         | ВУ, ВОДИТЕЛЬСКОЕ           | Водительское удостоверение (Приказ МВД №995) | order_n_995_ru()   |
+
+- Неизвестный код → ошибка (Err) с текстом, в котором перечислены допустимые коды.
+  В 1С она станет исключением.
+- Транслитерация: Transliterator::new(<таблица>) и трейт ToLatin::to_latin.
+  Символы, которых нет в таблице (латиница, цифры, знаки), передаются без изменений.
+- Разбор кода системы вынести в отдельную функцию, а саму транслитерацию — в отдельную
+  публичную функцию, независимую от FFI, чтобы её можно было тестировать.
+- В рабочем коде без unwrap/expect/unsafe. Документирующие комментарии к публичным элементам.
+
+## Шаг 4. Тестирование (только Rust, в 1С не тестировать)
+Юнит-тесты в src\lib.rs (#[cfg(test)]):
+- каждая система на фразе «Съешь же ещё этих мягких французских булок»;
+  ожидаемые значения сверять с таблицами в исходниках translit 0.8.0, не придумывать;
+- пустой код и код "ГОСТ" дают тот же результат, что и "GOST";
+- коды без учёта регистра и пробелов ("passport", " Driver ");
+- неизвестный код → Err;
+- пустая исходная строка → пустая строка;
+- смешанный текст (кириллица + латиница + цифры) → латиница и цифры не меняются;
+- регистр сохраняется (ПРИВЕТ / привет), отдельно проверить ё/Ё, ъ, ь.
+Затем выполнить строго по порядку, всё должно пройти без ошибок и предупреждений:
+  cargo fmt; cargo clippy --all-targets -- -D warnings; cargo test; cargo make pack
+
+## Шаг 5. Результат
+Каталог D:\work\git\repository\Rust\translit_dll\out содержит:
+translit_x32.dll, translit_x64.dll, Manifest.xml, translit.zip.
+Итоговый отчёт: удалённые, изменённые и созданные файлы; вывод clippy и тестов;
+что установлено на шаге 1; пример вызова из 1С:
+  ПодключитьВнешнююКомпоненту(<макет/путь к translit.zip>, "Translit", ТипВнешнейКомпоненты.Native);
+  Компонента = Новый("AddIn.Translit.TranslitAddin");
+  Результат = Компонента.Транслитерировать("Привет", "PASSPORT");
